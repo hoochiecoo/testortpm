@@ -1,0 +1,191 @@
+name: Build YouTube Streamer
+
+on:
+  workflow_dispatch:
+    inputs:
+      stream_key:
+        description: 'Ваш ключ трансляции YouTube (из творческой студии)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.19.0'
+          channel: 'stable'
+
+      - name: Create Project & Inject Code
+        run: |
+          # 1. Создаем проект
+          flutter create youtube_app
+          cd youtube_app
+
+          # 2. Добавляем зависимости
+          flutter pub add apivideo_live_stream permission_handler
+
+          # 3. Генерируем main.dart
+          # Используем 'EOF' чтобы переменные $ не ломали bash скрипт
+          cat <<'EOF' > lib/main.dart
+          import 'package:flutter/material.dart';
+          import 'package:permission_handler/permission_handler.dart';
+          import 'package:apivideo_live_stream/apivideo_live_stream.dart';
+
+          void main() {
+            runApp(const MaterialApp(home: YouTubeStreamer()));
+          }
+
+          class YouTubeStreamer extends StatefulWidget {
+            const YouTubeStreamer({super.key});
+            @override
+            State<YouTubeStreamer> createState() => _YouTubeStreamerState();
+          }
+
+          class _YouTubeStreamerState extends State<YouTubeStreamer> with WidgetsBindingObserver {
+            late final ApiVideoLiveStreamController _controller;
+            
+            // ПЛЕЙСХОЛДЕР КЛЮЧА (будет заменен через sed)
+            final String _streamKey = "REPLACE_ME_KEY";
+            final String _rtmpUrl = "rtmp://a.rtmp.youtube.com/live2"; 
+
+            bool _isStreaming = false;
+            bool _isCameraInitialized = false;
+
+            @override
+            void initState() {
+              super.initState();
+              WidgetsBinding.instance.addObserver(this);
+              _initController();
+            }
+
+            void _initController() {
+              _controller = ApiVideoLiveStreamController(
+                initialAudioConfig: AudioConfig(
+                  bitrate: 128 * 1000, 
+                  sampleRate: 44100,
+                  stereo: true,
+                ),
+                initialVideoConfig: VideoConfig(
+                  bitrate: 2 * 1024 * 1024,
+                  resolution: Resolution.RESOLUTION_720,
+                  fps: 30,
+                ),
+                onConnectionSuccess: () => print('Connected!'),
+                onConnectionFailed: (e) {
+                  setState(() => _isStreaming = false);
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+                },
+                onDisconnection: () => setState(() => _isStreaming = false),
+              );
+              _checkPermissionsAndStart();
+            }
+
+            Future<void> _checkPermissionsAndStart() async {
+              await [Permission.camera, Permission.microphone].request();
+              if (await Permission.camera.isGranted && await Permission.microphone.isGranted) {
+                await _controller.startPreview();
+                setState(() => _isCameraInitialized = true);
+              }
+            }
+
+            Future<void> _toggleStream() async {
+              if (!_isCameraInitialized) return;
+              if (_isStreaming) {
+                await _controller.stop();
+              } else {
+                await _controller.start(streamKey: _streamKey, url: _rtmpUrl);
+                setState(() => _isStreaming = true);
+              }
+            }
+
+            Future<void> _switchCamera() async {
+              final pos = _controller.cameraPosition == CameraPosition.back 
+                  ? CameraPosition.front 
+                  : CameraPosition.back;
+              await _controller.setCameraPosition(pos);
+            }
+
+            @override
+            void dispose() {
+              WidgetsBinding.instance.removeObserver(this);
+              _controller.stop();
+              super.dispose();
+            }
+
+            @override
+            void didChangeAppLifecycleState(AppLifecycleState state) {
+              if (state == AppLifecycleState.inactive) _controller.stop();
+              if (state == AppLifecycleState.resumed) _controller.startPreview();
+            }
+
+            @override
+            Widget build(BuildContext context) {
+              return Scaffold(
+                body: SafeArea(
+                  child: Stack(
+                    children: [
+                      _isCameraInitialized
+                          ? ApiVideoCameraPreview(controller: _controller)
+                          : const Center(child: CircularProgressIndicator()),
+                      Positioned(
+                        bottom: 30, left: 0, right: 0,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            FloatingActionButton(
+                              heroTag: "cam", backgroundColor: Colors.grey,
+                              onPressed: _switchCamera,
+                              child: const Icon(Icons.switch_camera),
+                            ),
+                            FloatingActionButton.extended(
+                              heroTag: "live",
+                              backgroundColor: _isStreaming ? Colors.red : Colors.green,
+                              onPressed: _toggleStream,
+                              label: Text(_isStreaming ? "STOP" : "GO LIVE"),
+                              icon: Icon(_isStreaming ? Icons.stop : Icons.videocam),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (_isStreaming)
+                        const Positioned(top: 20, right: 20, child: Chip(label: Text("LIVE"), backgroundColor: Colors.red)),
+                    ],
+                  ),
+                ),
+              );
+            }
+          }
+          EOF
+
+          # 4. Вставляем ключ трансляции из Input
+          sed -i "s/REPLACE_ME_KEY/${{ inputs.stream_key }}/g" lib/main.dart
+
+          # 5. Настраиваем Android Manifest (права)
+          sed -i 's|<application| <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <application|g' android/app/src/main/AndroidManifest.xml
+
+          # 6. Настраиваем Gradle (minSdkVersion 21)
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle
+
+      - name: Build APK
+        run: |
+          cd youtube_app
+          flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: streamer-apk
+          path: youtube_app/build/app/outputs/flutter-apk/app-release.apk
