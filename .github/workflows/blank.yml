@@ -37,7 +37,7 @@ jobs:
           # 2. Добавляем зависимости
           flutter pub add apivideo_live_stream permission_handler
 
-          # 3. Генерируем main.dart
+          # 3. Генерируем main.dart (ИСПРАВЛЕНЫ МЕТОДЫ)
           cat <<'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:permission_handler/permission_handler.dart';
@@ -56,7 +56,6 @@ jobs:
           class _YouTubeStreamerState extends State<YouTubeStreamer> with WidgetsBindingObserver {
             late final ApiVideoLiveStreamController _controller;
             
-            // ПЛЕЙСХОЛДЕР КЛЮЧА
             final String _streamKey = "REPLACE_ME_KEY";
             final String _rtmpUrl = "rtmp://a.rtmp.youtube.com/live2"; 
 
@@ -71,11 +70,11 @@ jobs:
             }
 
             void _initController() {
+              // Исправлена конфигурация аудио (убран stereo: true)
               _controller = ApiVideoLiveStreamController(
                 initialAudioConfig: AudioConfig(
                   bitrate: 128 * 1000, 
                   sampleRate: 44100,
-                  stereo: true,
                 ),
                 initialVideoConfig: VideoConfig(
                   bitrate: 2 * 1024 * 1024,
@@ -103,9 +102,11 @@ jobs:
             Future<void> _toggleStream() async {
               if (!_isCameraInitialized) return;
               if (_isStreaming) {
-                await _controller.stop();
+                // ИСПРАВЛЕНО: stopStreaming вместо stop
+                await _controller.stopStreaming();
               } else {
-                await _controller.start(streamKey: _streamKey, url: _rtmpUrl);
+                // ИСПРАВЛЕНО: startStreaming вместо start
+                await _controller.startStreaming(streamKey: _streamKey, url: _rtmpUrl);
                 setState(() => _isStreaming = true);
               }
             }
@@ -120,13 +121,13 @@ jobs:
             @override
             void dispose() {
               WidgetsBinding.instance.removeObserver(this);
-              _controller.stop();
+              _controller.stopStreaming();
               super.dispose();
             }
 
             @override
             void didChangeAppLifecycleState(AppLifecycleState state) {
-              if (state == AppLifecycleState.inactive) _controller.stop();
+              if (state == AppLifecycleState.inactive) _controller.stopStreaming();
               if (state == AppLifecycleState.resumed) _controller.startPreview();
             }
 
@@ -172,26 +173,20 @@ jobs:
           # 4. Вставляем ключ трансляции
           sed -i "s/REPLACE_ME_KEY/${{ inputs.stream_key }}/g" lib/main.dart
 
-          # 5. Настраиваем Android Manifest (права)
+          # 5. Настраиваем Android Manifest
           sed -i 's|<application| <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <application|g' android/app/src/main/AndroidManifest.xml
 
-          # ========================================================
-          # КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ (Fix Kotlin Version Mismatch)
-          # ========================================================
-          
-          # 6. Устанавливаем minSdkVersion 24 (безопаснее для видео)
+          # 6. Фиксы для Kotlin и SDK
           sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 24/g' android/build.gradle
           sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
 
-          # 7. Принудительно ставим версию Kotlin 1.9.23
-          # Исправление для старого формата build.gradle
+          # Принудительно ставим версию Kotlin 1.9.23
           sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.23'/" android/build.gradle
-          # Исправление для нового формата settings.gradle (если используется plugins block)
           if [ -f "android/settings.gradle" ]; then
              sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.23"/' android/settings.gradle
           fi
 
-          # 8. Обновляем Gradle Wrapper до 8.7 (нужен для нового Kotlin)
+          # Обновляем Gradle
           cd android
           ./gradlew wrapper --gradle-version 8.7 --distribution-type all
           cd ..
@@ -199,7 +194,6 @@ jobs:
       - name: Build APK
         run: |
           cd youtube_app
-          # Добавляем флаг --no-tree-shake-icons для ускорения и избежания ошибок шрифтов
           flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK
