@@ -25,7 +25,7 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.19.0'
+          flutter-version: '3.22.2'
           channel: 'stable'
 
       - name: Create Project & Fix Config
@@ -37,7 +37,7 @@ jobs:
           # 2. Добавляем зависимости
           flutter pub add apivideo_live_stream permission_handler
 
-          # 3. Генерируем main.dart (Код остался тем же)
+          # 3. Генерируем main.dart
           cat <<'EOF' > lib/main.dart
           import 'package:flutter/material.dart';
           import 'package:permission_handler/permission_handler.dart';
@@ -176,18 +176,30 @@ jobs:
           sed -i 's|<application| <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.CAMERA"/>\n    <uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <application|g' android/app/src/main/AndroidManifest.xml
 
           # ========================================================
-          # ИСПРАВЛЕНИЕ ОШИБКИ BUILD FAILED (Kotlin version)
+          # КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ (Fix Kotlin Version Mismatch)
           # ========================================================
           
-          # 6. Устанавливаем minSdkVersion 21
-          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 21/g' android/app/build.gradle
+          # 6. Устанавливаем minSdkVersion 24 (безопаснее для видео)
+          sed -i 's/minSdkVersion = flutter.minSdkVersion/minSdkVersion = 24/g' android/build.gradle
+          sed -i 's/minSdkVersion flutter.minSdkVersion/minSdkVersion 24/g' android/app/build.gradle
 
-          # 7. Принудительно обновляем Kotlin до 1.9.22 (исправление вашей ошибки)
-          sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.22'/" android/build.gradle
+          # 7. Принудительно ставим версию Kotlin 1.9.23
+          # Исправление для старого формата build.gradle
+          sed -i "s/ext.kotlin_version = .*/ext.kotlin_version = '1.9.23'/" android/build.gradle
+          # Исправление для нового формата settings.gradle (если используется plugins block)
+          if [ -f "android/settings.gradle" ]; then
+             sed -i 's/id "org.jetbrains.kotlin.android" version ".*"/id "org.jetbrains.kotlin.android" version "1.9.23"/' android/settings.gradle
+          fi
+
+          # 8. Обновляем Gradle Wrapper до 8.7 (нужен для нового Kotlin)
+          cd android
+          ./gradlew wrapper --gradle-version 8.7 --distribution-type all
+          cd ..
 
       - name: Build APK
         run: |
           cd youtube_app
+          # Добавляем флаг --no-tree-shake-icons для ускорения и избежания ошибок шрифтов
           flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK
